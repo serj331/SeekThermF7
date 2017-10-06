@@ -364,16 +364,14 @@ int main(void) {
 						}
 					}
 
-					int minTemp = ((minv) - 5950) / 40;
-					int maxTemp = ((maxv - 100) - 5950) / 40;
-					char str[50];
-					sprintf(str, "max=%dc", maxTemp);
-					LCD_DrawString(&Font20, 0, 0, str);
+//					int minTemp = ((minv) - 5950) / 40;
+//					int maxTemp = ((maxv - 100) - 5950) / 40;
+//					char str[50];
+//					sprintf(str, "max=%dc", maxTemp);
+//					LCD_DrawString(&Font20, 0, 0, str);
 //					sprintf(str, "min=%dc", minTemp);
 //					LCD_DrawString(&Font20, 0, 20, str);
-
 					HAL_LTDC_SetAddress(&hltdc, (uint32_t)LCDLay1FrameBuf, 0);
-
 				}
 					break;
 				case 4: {
