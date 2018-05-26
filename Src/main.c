@@ -75,15 +75,18 @@ uint16_t __attribute__((section (".sdram_b1"))) LCDLay1FrontBuf[480 * 272];
 uint16_t __attribute__((section (".sdram_b2"))) LCDLay1BackBuf[480 * 272];
 uint16_t* LCDLay1FrameBuf = LCDLay1FrontBuf;
 
-uint16_t __attribute__((section (".sdram_b3"))) FrameID3_cc[32448];
+
 double __attribute__((section (".sdram_b3"))) GainCalibration[32448];
 
 uint16_t FrameID1[32448];
 uint16_t FrameID3[32448];
+uint16_t FrameID3_flt[32448];
 uint16_t FrameID4[32448];
 uint8_t BadPixels[32448];
 
 int CalibFrameAvgVal = 0;
+
+const int SETH_TMAX = 16384, SETH_TMIN = 2000;
 
 /* USER CODE END PV */
 
@@ -125,15 +128,13 @@ int compare(const void * a, const void * b) {
 }
 
 uint16_t GetFrameMedian(uint16_t* frame) {
-	HAL_GPIO_WritePin(LCD_PENIRQ_GPIO_Port, LCD_PENIRQ_Pin, GPIO_PIN_SET);
 	uint16_t sortArr[32448];
 	memcpy(sortArr, frame, 64896);
 	qsort(sortArr, 32448, sizeof(uint16_t), compare);
-	HAL_GPIO_WritePin(LCD_PENIRQ_GPIO_Port, LCD_PENIRQ_Pin, GPIO_PIN_RESET);
 	return (uint16_t) sortArr[32448 / 2];
 }
 
-void fixBadPixels() {
+void FrameFixBadPixels(uint16_t* frame) {
 	uint16_t x = 0;
 	uint16_t y = 0;
 	uint16_t i = 0;
@@ -149,75 +150,118 @@ void fixBadPixels() {
 
 				if (y > 0 && !BadPixels[i - 208]) //top pixel
 						{
-					val += FrameID3[i - 208];
+					val += frame[i - 208];
 					++nr;
 				}
 
 				if (y < 155 && !BadPixels[i + 208]) // bottom pixel
 						{
-					val += FrameID3[i + 208];
+					val += frame[i + 208];
 					++nr;
 				}
 
 				if (x > 0 && !BadPixels[i - 1]) //Left pixel
 						{
-					val += FrameID3[i - 1];
+					val += frame[i - 1];
 					++nr;
 				}
 
 				if (x < 205 && !BadPixels[i + 1]) //Right pixel
 						{
-					val += FrameID3[i + 1];
+					val += frame[i + 1];
 					++nr;
 				}
 
 				if (nr > 0) {
 					val /= nr;
-					FrameID3[i] = val;
+					frame[i] = val;
 				}
 			}
 		}
 	}
 }
 
-void removeNoise() {
-	uint16_t x = 0;
-	uint16_t y = 0;
-	uint16_t i = 0;
-	uint16_t val = 0;
-	uint16_t arrColor[4];
+//void removeNoise() {
+//	uint16_t x = 0;
+//	uint16_t y = 0;
+//	uint16_t i = 0;
+//	uint16_t val = 0;
+//	uint16_t arrColor[4];
+//
+//	for (y = 0; y < 156; y++) {
+//		for (x = 0; x < 208; x++) {
+//			if (x > 0 && x < 206 && y > 0 && y < 155) {
+//				arrColor[0] = FrameID3[i - 208]; //top
+//				arrColor[1] = FrameID3[i + 208]; //bottom
+//				arrColor[2] = FrameID3[i - 1]; //left
+//				arrColor[3] = FrameID3[i + 1]; //right
+//
+//				uint16_t highest = 0;
+//				uint16_t lowest = 30000;
+//
+//				for (int i = 0; i < 4; i++) {
+//					if (arrColor[i] > highest)
+//						highest = arrColor[i];
+//					if (arrColor[i] < lowest)
+//						lowest = arrColor[i];
+//				}
+//
+//				val = (uint16_t) (((int) arrColor[0] + arrColor[1] + arrColor[2]
+//						+ arrColor[3] - highest - lowest) / 2);
+//
+//				if (abs(val - FrameID3[i]) > 100 && val != 0) {
+//					FrameID3[i] = val;
+//				}
+//			}
+//			i++;
+//		}
+//	}
+//
+//}
 
-	for (y = 0; y < 156; y++) {
-		for (x = 0; x < 208; x++) {
-			if (x > 0 && x < 206 && y > 0 && y < 155) {
-				arrColor[0] = FrameID3[i - 208]; //top
-				arrColor[1] = FrameID3[i + 208]; //bottom
-				arrColor[2] = FrameID3[i - 1]; //left
-				arrColor[3] = FrameID3[i + 1]; //right
+#pragma GCC push_options
+#pragma GCC optimize ("-O2")
+void FrameMedianFilter(uint16_t* frame_in, uint16_t* frame_out) {
+	uint16_t window[9];
 
-				uint16_t highest = 0;
-				uint16_t lowest = 30000;
-
-				for (int i = 0; i < 4; i++) {
-					if (arrColor[i] > highest)
-						highest = arrColor[i];
-					if (arrColor[i] < lowest)
-						lowest = arrColor[i];
-				}
-
-				val = (uint16_t) (((int) arrColor[0] + arrColor[1] + arrColor[2]
-						+ arrColor[3] - highest - lowest) / 2);
-
-				if (abs(val - FrameID3[i]) > 100 && val != 0) {
-					FrameID3[i] = val;
-				}
-			}
-			i++;
+	for (int y = 1; y < 156 - 1; y++) {
+		for (int x = 1; x < 206 - 1; x++) {
+			window[0] = frame_in[(y - 1) * 208 + (x - 1)];
+			window[1] = frame_in[(y - 1) * 208 + (x)];
+			window[2] = frame_in[(y - 1) * 208 + (x + 1)];
+			window[3] = frame_in[(y) * 208 + (x - 1)];
+			window[4] = frame_in[(y) * 208 + (x)];
+			window[5] = frame_in[(y) * 208 + (x + 1)];
+			window[6] = frame_in[(y + 1) * 208 + (x - 1)];
+			window[7] = frame_in[(y + 1) * 208 + (x)];
+			window[8] = frame_in[(y + 1) * 208 + (x + 1)];
+            for (int i = 0; i < 5; i++) {
+                int minVal = 0xFFFF, minValIdx = 0;
+                for (int j = i; j < 9; j++) {
+                    if (minVal > window[j]) {
+                        minVal = window[j];
+                        minValIdx = j;
+                    }
+                }
+                int tmp = window[i];
+                window[i] = window[minValIdx];
+                window[minValIdx] = tmp;
+            }
+			frame_out[y * 208 + x] = window[4];
 		}
 	}
 
-}
+	for (int y = 0; y < 156; y++) {
+		frame_out[y * 208 + 0] = frame_out[y * 208 + 1];
+		frame_out[y * 208 + 205] = frame_out[y * 208 + 204];
+	}
 
+	for (int x = 0; x < 206; x++) {
+		frame_out[0 + x] = frame_in[1 * 208 + x];
+		frame_out[155 * 208 + x] = frame_in[154 * 208 + x];
+	}
+}
+#pragma GCC pop_options
 
 /* USER CODE END 0 */
 
@@ -292,14 +336,27 @@ int main(void) {
 
 				HAL_GPIO_WritePin(USB_PSO_GPIO_Port, USB_PSO_Pin, GPIO_PIN_SET);
 
-				int frameId = ((uint8_t*) rawFrame)[20];
+				int frameId = rawFrame[10];
 
 				switch (frameId) {
+				case 4: {
+					memcpy(FrameID4, rawFrame, 64896);
+					double gainFrameAvgVal = GetFrameMedian(FrameID4);
+					for (int i = 0; i < 32448; i++) {
+						if (FrameID4[i] > SETH_TMIN && FrameID4[i] < SETH_TMAX) {
+							GainCalibration[i] = gainFrameAvgVal / (double) FrameID4[i];
+						} else {
+							GainCalibration[i] = 1.0;
+							BadPixels[i] = 1;
+						}
+					}
+				}
+					break;
 				case 1: {
 					memcpy(FrameID1, rawFrame, 64896);
 					CalibFrameAvgVal = GetFrameMedian(FrameID1);
 					for (int i = 0; i < 32448; i++) {
-						if (FrameID1[i] < 2000 || FrameID1[i] > 22000) {
+						if (FrameID1[i] < SETH_TMIN || FrameID1[i] > SETH_TMAX) {
 							BadPixels[i] = 1;
 						}
 					}
@@ -308,46 +365,39 @@ int main(void) {
 				case 3: {
 					memcpy(FrameID3, rawFrame, 64896);
 					for (int i = 0; i < 32448; i++) {
-						if (FrameID3[i] > 2000 && FrameID3[i] < 30000) {
-							double diff = (double) FrameID3[i] - FrameID1[i];
-							FrameID3[i] =
-									(uint16_t) ((diff * GainCalibration[i])
-											+ CalibFrameAvgVal);
+						if (FrameID3[i] > SETH_TMIN && FrameID3[i] < SETH_TMAX) {
+							double v =  ( GainCalibration[i] * ((double)FrameID3[i] - (double)FrameID1[i])) + SETH_TMAX / 2;
+							FrameID3[i] = (uint16_t)v;
 						} else {
 							FrameID3[i] = 0;
 							BadPixels[i] = 1;
 						}
 					}
 
-					fixBadPixels();
-					removeNoise();
+					FrameFixBadPixels(FrameID3);
+					FrameMedianFilter(FrameID3, FrameID3_flt);
 
 					//find min max
-					int minv = 30000;
-					int maxv = 2000;
+					int minv = 0xFFFF;
+					int maxv = 0;
 					for (int i = 0; i < 156; i++) {
 						for (int j = 0; j < 206; j++) {
 							int pixPos = i * 208 + j;
-							int pixVal = FrameID3[pixPos];
+							int pixVal = FrameID3_flt[pixPos];
 							if (minv > pixVal) {
 								minv = pixVal;
 							}
 							if (maxv < pixVal) {
 								maxv = pixVal;
 							}
-
+							if(maxv > 10000) {
+								maxv = 10000;
+							}
 						}
 					}
 
 					minv -= 0;
 					maxv += 100;
-					//apply pallete
-					for (int i = 0; i < 156; i++) {
-						for (int j = 0; j < 206; j++) {
-							int pixPos = i * 208 + j;
-							FrameID3_cc[pixPos] = RainPallete565[(int) ((double) ((FrameID3[pixPos] - minv) * 1000.0) / (maxv - minv))];
-						}
-					}
 
 					//draw
 
@@ -360,7 +410,7 @@ int main(void) {
 					for (int y = 0; y < 272; y++) {
 						for (int x = 0; x < 480; x++) {
 							int pixPos = (((272 - 1 - y) * 156) / 272) * 208 + ((x * 206) / 480);
-							LCDLay1FrameBuf[(y * 480) + x] = FrameID3_cc[pixPos];
+							LCDLay1FrameBuf[(y * 480) + x] = RainPallete565[(int) ((double) ((FrameID3_flt[pixPos] - minv) * 1000.0) / (maxv - minv))];
 						}
 					}
 
@@ -371,21 +421,9 @@ int main(void) {
 //					LCD_DrawString(&Font20, 0, 0, str);
 //					sprintf(str, "min=%dc", minTemp);
 //					LCD_DrawString(&Font20, 0, 20, str);
+
 					HAL_LTDC_SetAddress(&hltdc, (uint32_t)LCDLay1FrameBuf, 0);
-				}
-					break;
-				case 4: {
-					memcpy(FrameID4, rawFrame, 64896);
-					double gainFrameAvgVal = GetFrameMedian(FrameID4);
-					for (int i = 0; i < 32448; i++) {
-						if (FrameID4[i] > 2000 && FrameID4[i] < 8000) {
-							GainCalibration[i] = gainFrameAvgVal
-									/ (double) FrameID4[i];
-						} else {
-							GainCalibration[i] = 1.0;
-							BadPixels[i] = 1;
-						}
-					}
+
 				}
 					break;
 				default:
